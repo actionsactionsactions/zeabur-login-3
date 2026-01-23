@@ -3,7 +3,7 @@ name: Zeabur Keep Alive
 on:
   schedule:
     # 每天 UTC 时间 00:00 执行（北京时间 08:00）
-    - cron: '0 0 * * *'
+    - cron: '05 17 * * *'
   workflow_dispatch: # 支持手动触发
 
 jobs:
