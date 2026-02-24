@@ -4,22 +4,18 @@
 
 ## 功能
 
-- ✅ 支持 Cookie 登录（优先）
-- ✅ 支持 Magic Link 登录（Cookie 失效时使用）
+- 🍪 Cookie 登录（自动重试，最多 3 次）
 - 📸 登录成功后截图并发送到 Telegram
-- 🔄 自动更新 Cookie 到 GitHub Secrets
+- 🔄 每次登录成功自动更新 Cookie 到 GitHub Secrets
 
 ## 配置步骤
 
-### 1. 首次设置（Magic Link）
+### 1. 获取 Zeabur Cookie
 
-1. 访问 [Zeabur 登录页](https://zeabur.com/login)
-2. 输入邮箱，点击「发送登录链接」
-3. 打开邮箱，**复制完整的登录链接**（不要点击）
-4. 链接格式：`https://zeabur.com/api/magic-link/callback?code=xxx&state=xxx`
-5. 将链接设置到 `ZEABUR_MAGIC_LINK` Secret
-
-> 首次 Magic Link 登录成功后，Cookie 会自动保存，后续无需再设置 Magic Link。
+1. 浏览器登录 [Zeabur 控制台](https://zeabur.com/projects)
+2. 打开开发者工具（F12）→ Network
+3. 刷新页面，找到任意请求，复制 `Cookie` 请求头的值
+4. 将 Cookie 设置到 GitHub Secret `ZEABUR_COOKIE`
 
 ### 2. 创建 Telegram Bot
 
@@ -42,25 +38,22 @@
 
 | Secret 名称 | 说明 |
 |------------|------|
-| `ZEABUR_MAGIC_LINK` | Magic Link（首次使用或 Cookie 失效时设置） |
-| `ZEABUR_COOKIE` | Cookie（自动生成，无需手动设置） |
+| `ZEABUR_COOKIE` | Zeabur Cookie（首次手动设置，后续自动更新） |
 | `REPO_TOKEN` | GitHub PAT（用于自动更新 Cookie） |
 | `TG_BOT_TOKEN` | Telegram Bot Token |
 | `TG_CHAT_ID` | Telegram Chat ID |
 
-## 登录优先级
+## 运行机制
 
 ```
-Cookie（优先）→ Magic Link（备选）
+Cookie 登录（最多 3 次尝试，间隔递增 5s/10s）
+  ├─ 成功 → 截图 + 自动更新 Cookie + Telegram 通知
+  └─ 失败 → Telegram 通知，提示更新 Cookie
 ```
-
-- 日常运行：自动使用 Cookie
-- Cookie 过期：尝试 Magic Link，成功后自动更新 Cookie
-- 两者都失败：发送 Telegram 通知，提示设置新的 Magic Link
 
 ## 执行频率
 
-默认每天 08:00（北京时间）执行。修改 `.github/workflows/keep-alive.yml` 中的 cron：
+默认每天 01:05（北京时间）执行。修改 `.github/workflows/keep-alive.yml` 中的 cron：
 
 ```yaml
 schedule:
@@ -73,7 +66,7 @@ schedule:
 ```bash
 pip install -r requirements.txt
 playwright install chromium
-export ZEABUR_COOKIE="your_cookie"  # 或 ZEABUR_MAGIC_LINK
+export ZEABUR_COOKIE="your_cookie"
 export TG_BOT_TOKEN="your_bot_token"
 export TG_CHAT_ID="your_chat_id"
 python scripts/keep_alive.py
