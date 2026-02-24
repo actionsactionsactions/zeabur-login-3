@@ -1,12 +1,13 @@
 """
 Zeabur Keep Alive Script
 使用 Playwright 模拟浏览器登录，保持账户活跃
-支持 Magic Link 登录（优先）和 Cookie 登录（备选）
-登录成功后发送 Telegram 通知和截图，并自动更新 Cookie
+通过 Cookie 登录（带重试），登录成功后自动更新 Cookie
+支持 Telegram 通知和截图
 """
 
 import os
 import sys
+import time
 import base64
 from datetime import datetime
 
@@ -101,67 +102,49 @@ def format_cookies(cookies: list) -> str:
     return '; '.join(f"{c['name']}={c['value']}" for c in cookies if 'zeabur.com' in c.get('domain', ''))
 
 
-# ==================== 登录方式 ====================
+# ==================== 登录 ====================
 
-def login_with_magic_link(context: BrowserContext, magic_link: str) -> tuple[Page, bool]:
-    """使用 Magic Link 登录"""
-    print('🔗 尝试 Magic Link 登录...')
-    page = context.new_page()
-    page.set_default_timeout(60000)  # 设置 60 秒超时
-    
-    try:
-        # Magic Link 可能需要较长时间处理认证
-        page.goto(magic_link, timeout=60000, wait_until='domcontentloaded')
-        page.wait_for_timeout(5000)  # 等待重定向完成
-        
-        # 检查是否登录成功（不在登录页）
-        if '/login' not in page.url:
-            print('✅ Magic Link 登录成功')
-            # 跳转到控制台
-            page.goto(ZEABUR_DASHBOARD_URL, wait_until='networkidle')
-            page.wait_for_timeout(2000)
-            return page, True
-        else:
-            print('❌ Magic Link 已失效或无效')
-            return page, False
-    except Exception as e:
-        print(f'❌ Magic Link 登录失败: {e}')
-        return page, False
-
-
-def login_with_cookie(context: BrowserContext, cookie_string: str) -> tuple[Page, bool]:
-    """使用 Cookie 登录"""
+def login_with_cookie(context: BrowserContext, cookie_string: str, max_retries: int = 2) -> tuple[Page, bool]:
+    """使用 Cookie 登录（带重试）"""
     print('🍪 尝试 Cookie 登录...')
     context.add_cookies(parse_cookies(cookie_string))
-    page = context.new_page()
     
-    try:
-        page.goto(ZEABUR_DASHBOARD_URL, wait_until='networkidle')
-        page.wait_for_timeout(2000)
+    for attempt in range(max_retries + 1):
+        page = context.new_page()
+        try:
+            page.goto(ZEABUR_DASHBOARD_URL, wait_until='networkidle')
+            page.wait_for_timeout(3000)
+            
+            if '/login' not in page.url:
+                print(f'✅ Cookie 登录成功 (第 {attempt + 1} 次尝试)')
+                return page, True
+            else:
+                print(f'⚠️ Cookie 第 {attempt + 1} 次尝试失败，页面跳转到登录页')
+                page.close()
+        except Exception as e:
+            print(f'⚠️ Cookie 第 {attempt + 1} 次尝试异常: {e}')
+            page.close()
         
-        if '/login' not in page.url:
-            print('✅ Cookie 登录成功')
-            return page, True
-        else:
-            print('❌ Cookie 已过期')
-            return page, False
-    except Exception as e:
-        print(f'❌ Cookie 登录失败: {e}')
-        return page, False
+        if attempt < max_retries:
+            wait = 5 * (attempt + 1)
+            print(f'⏳ 等待 {wait} 秒后重试...')
+            time.sleep(wait)
+    
+    print('❌ Cookie 已过期')
+    return context.new_page(), False
 
 
 # ==================== 主逻辑 ====================
 
 def main():
-    magic_link = os.environ.get('ZEABUR_MAGIC_LINK')
     cookie_string = os.environ.get('ZEABUR_COOKIE')
     repo_token = os.environ.get('REPO_TOKEN')
     repo = os.environ.get('GITHUB_REPOSITORY', '')
     tg_bot_token = os.environ.get('TG_BOT_TOKEN')
     tg_chat_id = os.environ.get('TG_CHAT_ID')
 
-    if not magic_link and not cookie_string:
-        print('❌ 错误: ZEABUR_MAGIC_LINK 和 ZEABUR_COOKIE 均未设置')
+    if not cookie_string:
+        print('❌ 错误: ZEABUR_COOKIE 未设置')
         sys.exit(1)
 
     print('🚀 启动浏览器...')
@@ -169,64 +152,42 @@ def main():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context()
-        page = None
-        login_success = False
-        login_method = None
         
         try:
-            # 优先尝试 Cookie
-            if cookie_string:
-                page, login_success = login_with_cookie(context, cookie_string)
-                if login_success:
-                    login_method = 'Cookie'
+            page, login_success = login_with_cookie(context, cookie_string)
             
-            # Cookie 失效时回退到 Magic Link
-            if not login_success and magic_link:
-                if page:
-                    page.close()
-                page, login_success = login_with_magic_link(context, magic_link)
-                if login_success:
-                    login_method = 'Magic Link'
-            
-            # 登录失败
             if not login_success:
-                error_msg = '❌ 所有登录方式均失败\n💡 请设置新的 ZEABUR_MAGIC_LINK'
+                error_msg = '❌ Cookie 登录失败\n💡 请更新 ZEABUR_COOKIE'
                 print(error_msg)
                 if tg_bot_token and tg_chat_id:
                     send_telegram_message(tg_bot_token, tg_chat_id, error_msg)
                 sys.exit(1)
             
             now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            print(f'✅ 登录成功！({login_method})\n⏰ 执行时间: {now}')
+            print(f'✅ 登录成功！\n⏰ 执行时间: {now}')
             
             # 截图
             page.screenshot(path=SCREENSHOT_PATH, full_page=False)
-            print(f'📸 截图已保存')
+            print('📸 截图已保存')
             
             # 构建日志
             logs = [f'✅ 已访问: 控制台 ({ZEABUR_DASHBOARD_URL})']
             
-            # 更新 Cookie（无论使用哪种方式登录都更新）
+            # 自动更新 Cookie
             new_cookie_string = format_cookies(context.cookies())
-            cookie_updated = False
             if repo_token and repo and new_cookie_string:
-                if new_cookie_string != cookie_string:
-                    print('🔄 正在更新 Cookie...')
-                    owner, repo_name = repo.split('/')
-                    update_github_secret(repo_token, owner, repo_name, 'ZEABUR_COOKIE', new_cookie_string)
-                    print('✅ GitHub Secret ZEABUR_COOKIE 已更新')
-                    cookie_updated = True
-                    logs.append(f'✅ 新 Cookie: {new_cookie_string[:20]}...{new_cookie_string[-10:]}')
-                    logs.append('✅ 已自动更新 ZEABUR_COOKIE')
+                print('🔄 正在更新 Cookie...')
+                owner, repo_name = repo.split('/')
+                update_github_secret(repo_token, owner, repo_name, 'ZEABUR_COOKIE', new_cookie_string)
+                print('✅ GitHub Secret ZEABUR_COOKIE 已更新')
+                logs.append('✅ 已自动更新 ZEABUR_COOKIE')
             
             # Telegram 通知
             if tg_bot_token and tg_chat_id:
                 print('📤 正在发送 Telegram 通知...')
-                # 构建格式化消息
                 message = f'''🟢 <b>Zeabur 自动登录</b>
 
 状态: ✅ 成功
-登录方式: {login_method}
 时间: {now}
 
 <b>日志:</b>
